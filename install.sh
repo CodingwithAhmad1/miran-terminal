@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Miran installer.
+# Miran Terminal installer.
 # Symlinks bin/ws and bin/dashboard.sh into ~/.local/bin and creates the
 # runtime state directory at ~/.workspace.
 #

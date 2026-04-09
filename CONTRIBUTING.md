@@ -1,4 +1,4 @@
-# Contributing to Miran
+# Contributing to Miran Terminal
 
 Bug reports, feature requests, and pull requests are welcome.
 
@@ -11,8 +11,8 @@ Bug reports, feature requests, and pull requests are welcome.
 ## Local setup
 
 ```sh
-git clone https://github.com/<user>/Miran.git
-cd Miran
+git clone https://github.com/CodingwithAhmad1/miran-terminal.git
+cd miran-terminal
 ./install.sh
 ws start
 ```

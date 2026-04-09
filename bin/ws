@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Miran — terminal workspace manager. https://github.com/<user>/Miran
+# Miran Terminal — workspace manager. https://github.com/CodingwithAhmad1/miran-terminal
 set -euo pipefail
 
 # Resolve this script's real directory, following symlinks. This lets the
@@ -390,9 +390,9 @@ cmd_config() {
 
 cmd_keys() {
     cat <<'EOF'
-Miran — keyboard switching setup
+Miran Terminal — keyboard switching setup
 
-Miran binds the following keys inside tmux (no prefix needed):
+Miran Terminal binds the following keys inside tmux (no prefix needed):
 
   Alt+1 .. Alt+9    jump to terminal N
   Alt+0             jump to dashboard
@@ -475,7 +475,7 @@ EOF
 
 usage() {
     cat <<'EOF'
-Miran — terminal workspace manager
+Miran Terminal — workspace manager
 
 Usage: ws <command> [options]
 

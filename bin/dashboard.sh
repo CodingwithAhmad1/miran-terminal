@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Miran dashboard — terminal manager TUI.
+# Miran Terminal dashboard — TUI.
 #
 # Render strategy: cursor-position + clear-to-EOL per line, then clear-to-end
 # of screen at the bottom. No full-screen clear between frames, so no flicker.

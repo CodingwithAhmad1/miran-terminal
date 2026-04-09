@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration tests for Miran.
+# Integration tests for Miran Terminal.
 # Drives the dashboard via tmux send-keys and asserts on:
 #   - config.json state
 #   - dashboard pane content
@@ -41,7 +41,7 @@ reset_state() {
 start_workspace() {
     reset_state
     tmux new-session -d -s "$SESSION" -x 100 -y 30 -n dashboard \
-        "while true; do /bin/bash $DASHBOARD; sleep 1; done"
+        "while true; do /bin/bash '$DASHBOARD'; sleep 1; done"
     sleep 1.0
 }
 
@@ -228,7 +228,7 @@ test_persistence() {
     cleanup
     sleep 0.2
     tmux new-session -d -s "$SESSION" -x 100 -y 30 -n dashboard \
-        "while true; do /bin/bash $DASHBOARD; sleep 1; done"
+        "while true; do /bin/bash '$DASHBOARD'; sleep 1; done"
     local count name dir note win
     count=$(jq '.terminals | length' "$CONFIG")
     for ((i = 0; i < count; i++)); do

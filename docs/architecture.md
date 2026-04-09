@@ -1,6 +1,6 @@
-# Miran architecture
+# Miran Terminal architecture
 
-A walkthrough of how the pieces fit together. Read this if you want to hack on Miran or just understand why it works the way it does.
+A walkthrough of how the pieces fit together. Read this if you want to hack on Miran Terminal or just understand why it works the way it does.
 
 ## TL;DR
 
@@ -93,7 +93,7 @@ A full re-render is forced (`NEEDS_FULL_REDRAW=1`) on startup, after `SIGWINCH`,
 
 ### Input prompts
 
-The trickiest bug in early Miran was that `name=$(read_input "Session name: ")` swallowed the prompt's escape codes into the variable instead of letting them reach the screen. The fix is to write prompts directly to `/dev/tty` and read input from `/dev/tty`, bypassing command substitution capture entirely.
+The trickiest bug in early Miran Terminal was that `name=$(read_input "Session name: ")` swallowed the prompt's escape codes into the variable instead of letting them reach the screen. The fix is to write prompts directly to `/dev/tty` and read input from `/dev/tty`, bypassing command substitution capture entirely.
 
 ```bash
 read_input() {

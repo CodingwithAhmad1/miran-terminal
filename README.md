@@ -1,4 +1,4 @@
-# Miran
+# Miran Terminal
 
 A terminal workspace dashboard. Manage many shells in one tmux session, each with a name and a free-text note that's visible inside the terminal itself. Switch between them with one keystroke from anywhere.
 
@@ -27,7 +27,7 @@ A terminal workspace dashboard. Manage many shells in one tmux session, each wit
 
 ## What it is
 
-Miran is a thin layer on top of [tmux](https://github.com/tmux/tmux). It gives you:
+Miran Terminal is a thin layer on top of [tmux](https://github.com/tmux/tmux). It gives you:
 
 - **A home dashboard.** A first-class "what am I working on" view that lists every terminal in the workspace, each with a name, a note, how long it's been alive, and whether it's idle.
 - **Notes that follow the terminal.** When you jump into a terminal, the note shows up at the top of the pane (via tmux's `pane-border-format`). You don't have to remember why you opened it.
@@ -35,11 +35,11 @@ Miran is a thin layer on top of [tmux](https://github.com/tmux/tmux). It gives y
 - **Persistence.** Terminals survive `ws stop` / `ws start`. Names, notes, working directories all come back.
 - **A small CLI.** `ws add`, `ws note`, `ws rm`, `ws ls` for scripting.
 
-It is intentionally simple: ~800 lines of bash on top of `tmux` and `jq`. There are no daemons, no background services, no Node, no Rust. If you can run tmux, you can run Miran.
+It is intentionally simple: ~800 lines of bash on top of `tmux` and `jq`. There are no daemons, no background services, no Node, no Rust. If you can run tmux, you can run Miran Terminal.
 
 ## Why
 
-[tmux](https://github.com/tmux/tmux) gives you windows and panes; [Zellij](https://zellij.dev) gives you a polished UI; both treat each terminal as a featureless slot. After more than three or four open terminals, "what was I doing in this one?" becomes a real question. Miran's whole job is to answer that question without making you leave the terminal.
+[tmux](https://github.com/tmux/tmux) gives you windows and panes; [Zellij](https://zellij.dev) gives you a polished UI; both treat each terminal as a featureless slot. After more than three or four open terminals, "what was I doing in this one?" becomes a real question. Miran Terminal's whole job is to answer that question without making you leave the terminal.
 
 It does **not** try to be a multiplexer (tmux already is one), a session manager (tmux already is one), or a window manager. It just adds the dashboard + notes layer on top.
 
@@ -57,11 +57,11 @@ On macOS:
 brew install tmux jq
 ```
 
-### Install Miran
+### Install Miran Terminal
 
 ```sh
-git clone https://github.com/<user>/Miran.git
-cd Miran
+git clone https://github.com/CodingwithAhmad1/miran-terminal.git
+cd miran-terminal
 ./install.sh
 ```
 
@@ -129,7 +129,7 @@ ws help                               # full CLI usage
 ## How it works
 
 ```
-~/Desktop/Miran/                  ← code lives here, git tracked
+~/miran-terminal/                 ← code lives here, git tracked
 ├── bin/
 │   ├── ws                        ← CLI (bash) — tmux + jq orchestration
 │   └── dashboard.sh              ← TUI (bash) — the home view
