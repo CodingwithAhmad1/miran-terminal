@@ -1,0 +1,518 @@
+#!/usr/bin/env bash
+# Miran — terminal workspace manager. https://github.com/<user>/Miran
+set -euo pipefail
+
+# Resolve this script's real directory, following symlinks. This lets the
+# script live anywhere (a git checkout, ~/.local/bin via symlink, etc.).
+_resolve_self() {
+    local src="${BASH_SOURCE[0]}" dir
+    while [ -L "$src" ]; do
+        dir="$(cd "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd "$(dirname "$src")" && pwd
+}
+SCRIPT_DIR="$(_resolve_self)"
+
+DASHBOARD_SCRIPT="$SCRIPT_DIR/dashboard.sh"
+
+# Runtime state lives in ~/.workspace regardless of where the code is.
+CONFIG_DIR="$HOME/.workspace"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+SESSION_NAME="workspace"
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+check_deps() {
+    local missing=()
+    command -v tmux &>/dev/null || missing+=(tmux)
+    command -v jq   &>/dev/null || missing+=(jq)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "Missing dependencies: ${missing[*]}"
+        echo "Install with: brew install ${missing[*]}"
+        exit 1
+    fi
+}
+
+ensure_config() {
+    mkdir -p "$CONFIG_DIR"
+    [[ -f "$CONFIG_FILE" ]] || echo '{"settings":{},"terminals":[]}' > "$CONFIG_FILE"
+    # Migrate: drop legacy chats array if present
+    if jq -e '.chats' "$CONFIG_FILE" >/dev/null 2>&1; then
+        local tmp="$CONFIG_FILE.tmp"
+        jq 'del(.chats)' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+    fi
+}
+
+config_read() {
+    jq -r "$@" "$CONFIG_FILE"
+}
+
+config_write() {
+    local tmp="$CONFIG_FILE.tmp"
+    cp "$CONFIG_FILE" "$CONFIG_FILE.bak"
+    jq "$@" "$CONFIG_FILE" > "$tmp" || { rm -f "$tmp"; die "Failed to update config"; }
+    mv "$tmp" "$CONFIG_FILE"
+}
+
+session_exists() {
+    tmux has-session -t "$SESSION_NAME" 2>/dev/null
+}
+
+setup_tmux_options() {
+    tmux set-option -t "$SESSION_NAME" status-style "bg=#252525,fg=#666666"
+    tmux set-option -t "$SESSION_NAME" status-left "[workspace] "
+    tmux set-option -t "$SESSION_NAME" status-left-length 20
+    tmux set-option -t "$SESSION_NAME" status-right ""
+    tmux set-option -t "$SESSION_NAME" status-right-length 0
+    tmux set-option -t "$SESSION_NAME" window-status-format " #I:#W "
+    tmux set-option -t "$SESSION_NAME" window-status-current-format " #I:#W "
+    tmux set-option -t "$SESSION_NAME" window-status-current-style "fg=#4fc3f7,bold"
+    tmux set-option -t "$SESSION_NAME" base-index 0
+    tmux set-option -t "$SESSION_NAME" renumber-windows off
+    tmux set-option -t "$SESSION_NAME" mouse on
+    # Capital D goes to dashboard; lowercase d remains the default detach.
+    tmux bind-key -T prefix D select-window -t "$SESSION_NAME:0"
+    # Keep dashboard window alive even if dashboard.sh ever exits unexpectedly.
+    tmux set-window-option -t "$SESSION_NAME:0" remain-on-exit on 2>/dev/null || true
+
+    # One-key switching from anywhere (Alt+0..9) — no prefix, fires inside any
+    # pane. Requires the terminal emulator's Option key to be configured as
+    # "Meta" / "Send Esc+". See `ws keys` for terminal-specific setup.
+    local i
+    for i in 0 1 2 3 4 5 6 7 8 9; do
+        tmux bind-key -n "M-$i" select-window -t "$SESSION_NAME:$i" 2>/dev/null || true
+    done
+}
+
+update_pane_border() {
+    local window="$1" name="$2" note="$3"
+    # pane-border-status is a window option; use set-window-option to be explicit.
+    tmux set-window-option -t "$SESSION_NAME:$window" pane-border-status top 2>/dev/null || true
+    tmux set-window-option -t "$SESSION_NAME:$window" pane-border-format \
+        "#[fg=colour114,bg=colour236] $name #[fg=colour250]— $note " 2>/dev/null || true
+}
+
+next_window_index() {
+    local count
+    count=$(config_read '.terminals | length')
+    echo $((count + 1))
+}
+
+terminal_name_exists() {
+    local name="$1"
+    local exists
+    exists=$(config_read --arg n "$name" '.terminals[] | select(.name == $n) | .name' 2>/dev/null || true)
+    [[ -n "$exists" ]]
+}
+
+# ── Commands ─────────────────────────────────────────────────────────
+
+cmd_start() {
+    check_deps
+    ensure_config
+
+    if session_exists; then
+        echo "Workspace session already running. Attaching..."
+        tmux select-window -t "$SESSION_NAME:0"
+        exec tmux attach-session -t "$SESSION_NAME"
+    fi
+
+    # Create session with dashboard on window 0. Wrap in a restart loop so the
+    # window survives even if dashboard.sh ever crashes.
+    tmux new-session -d -s "$SESSION_NAME" -n "dashboard" \
+        "while true; do '$DASHBOARD_SCRIPT'; sleep 1; done"
+    setup_tmux_options
+
+    # Restore existing terminal sessions from config
+    local count
+    count=$(config_read '.terminals | length')
+    for ((i = 0; i < count; i++)); do
+        local name dir note win
+        name=$(config_read --argjson i "$i" '.terminals[$i].name')
+        dir=$(config_read --argjson i "$i" '.terminals[$i].dir')
+        note=$(config_read --argjson i "$i" '.terminals[$i].note')
+        win=$(config_read --argjson i "$i" '.terminals[$i].tmux_window')
+        tmux new-window -t "$SESSION_NAME:$win" -n "$name" -c "$dir" 2>/dev/null || true
+        update_pane_border "$win" "$name" "$note"
+    done
+
+    tmux select-window -t "$SESSION_NAME:0"
+    exec tmux attach-session -t "$SESSION_NAME"
+}
+
+cmd_add() {
+    check_deps
+    ensure_config
+
+    local name="" dir="" note=""
+
+    # Parse arguments
+    if [[ $# -lt 1 ]]; then
+        die "Usage: ws add <name> [--dir <path>] [--note \"description\"]"
+    fi
+    name="$1"; shift
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dir)  dir="$2"; shift 2 ;;
+            --note) note="$2"; shift 2 ;;
+            *)      die "Unknown option: $1" ;;
+        esac
+    done
+
+    [[ -z "$dir" ]] && dir="$(pwd)"
+    [[ -z "$note" ]] && note="$(basename "$dir")"
+
+    # Validate
+    if terminal_name_exists "$name"; then
+        die "Session \"$name\" already exists. Use a different name."
+    fi
+
+    local term_count
+    term_count=$(config_read '.terminals | length')
+    if [[ "$term_count" -ge 9 ]]; then
+        die "Maximum 9 terminal sessions reached."
+    fi
+
+    local window_idx
+    window_idx=$((term_count + 1))
+
+    # Create tmux window if session is running
+    if session_exists; then
+        tmux new-window -t "$SESSION_NAME:$window_idx" -n "$name" -c "$dir"
+        update_pane_border "$window_idx" "$name" "$note"
+    fi
+
+    # Update config
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    config_write --arg n "$name" --arg d "$dir" --arg no "$note" --arg t "$now" --argjson w "$window_idx" \
+        '.terminals += [{"name":$n,"dir":$d,"note":$no,"created":$t,"tmux_window":$w}]'
+
+    echo "Added terminal session \"$name\" (window $window_idx)"
+}
+
+cmd_note() {
+    check_deps
+    ensure_config
+
+    if [[ $# -lt 2 ]]; then
+        die "Usage: ws note <name-or-number> \"new note\""
+    fi
+
+    local target="$1" new_note="$2"
+
+    # By window number
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        local name
+        name=$(config_read --argjson w "$target" '.terminals[] | select(.tmux_window == $w) | .name' 2>/dev/null || true)
+        if [[ -n "$name" ]]; then
+            config_write --arg n "$name" --arg no "$new_note" \
+                '(.terminals[] | select(.name == $n)).note = $no'
+            if session_exists; then
+                update_pane_border "$target" "$name" "$new_note"
+            fi
+            echo "Updated note for terminal \"$name\""
+            return
+        fi
+    fi
+
+    # By name
+    local found
+    found=$(config_read --arg n "$target" '.terminals[] | select(.name == $n) | .name' 2>/dev/null || true)
+    if [[ -n "$found" ]]; then
+        local win
+        win=$(config_read --arg n "$target" '.terminals[] | select(.name == $n) | .tmux_window')
+        config_write --arg n "$target" --arg no "$new_note" \
+            '(.terminals[] | select(.name == $n)).note = $no'
+        if session_exists; then
+            update_pane_border "$win" "$target" "$new_note"
+        fi
+        echo "Updated note for terminal \"$target\""
+        return
+    fi
+
+    die "No terminal found matching \"$target\""
+}
+
+cmd_rm() {
+    check_deps
+    ensure_config
+
+    local force=0
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force|-f) force=1; shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    set -- "${args[@]}"
+
+    if [[ $# -lt 1 ]]; then
+        die "Usage: ws rm [--force] <name-or-number>"
+    fi
+
+    local target="$1"
+    local name=""
+
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        name=$(config_read --argjson w "$target" '.terminals[] | select(.tmux_window == $w) | .name' 2>/dev/null || true)
+    else
+        name=$(config_read --arg n "$target" '.terminals[] | select(.name == $n) | .name' 2>/dev/null || true)
+    fi
+
+    if [[ -z "$name" ]]; then
+        die "No terminal found matching \"$target\""
+    fi
+
+    if [[ $force -eq 0 ]]; then
+        read -rp "Remove terminal \"$name\"? [y/N] " confirm
+        [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Cancelled."; return; }
+    fi
+
+    local win
+    win=$(config_read --arg n "$name" '.terminals[] | select(.name == $n) | .tmux_window')
+    if session_exists; then
+        tmux kill-window -t "$SESSION_NAME:$win" 2>/dev/null || true
+    fi
+    config_write --arg n "$name" '.terminals = [.terminals[] | select(.name != $n)]'
+    _renumber_windows
+    echo "Removed terminal \"$name\""
+}
+
+_renumber_windows() {
+    # Reassign tmux_window indices to be sequential from 1
+    local count
+    count=$(config_read '.terminals | length')
+    for ((i = 0; i < count; i++)); do
+        local new_win=$((i + 1))
+        local cur_name
+        cur_name=$(config_read --argjson i "$i" '.terminals[$i].name')
+        local cur_win
+        cur_win=$(config_read --argjson i "$i" '.terminals[$i].tmux_window')
+        if [[ "$cur_win" -ne "$new_win" ]] && session_exists; then
+            tmux move-window -s "$SESSION_NAME:$cur_win" -t "$SESSION_NAME:$new_win" 2>/dev/null || true
+        fi
+        config_write --argjson i "$i" --argjson w "$new_win" '.terminals[$i].tmux_window = $w'
+    done
+}
+
+cmd_ls() {
+    check_deps
+    ensure_config
+
+    local term_count
+    term_count=$(config_read '.terminals | length')
+
+    if [[ "$term_count" -eq 0 ]]; then
+        echo "No terminals. Add one with:"
+        echo "  ws add <name> --note \"description\""
+        return
+    fi
+
+    echo "TERMINALS"
+    for ((i = 0; i < term_count; i++)); do
+        local name note win
+        name=$(config_read --argjson i "$i" '.terminals[$i].name')
+        note=$(config_read --argjson i "$i" '.terminals[$i].note')
+        win=$(config_read --argjson i "$i" '.terminals[$i].tmux_window')
+        echo "  [$win] $name — $note"
+    done
+}
+
+cmd_dash() {
+    check_deps
+    ensure_config
+
+    if ! session_exists; then
+        cmd_start
+        return
+    fi
+
+    tmux select-window -t "$SESSION_NAME:0"
+    exec tmux attach-session -t "$SESSION_NAME"
+}
+
+cmd_kill() {
+    check_deps
+    ensure_config
+
+    if [[ $# -lt 1 ]]; then
+        die "Usage: ws kill <name>"
+    fi
+
+    local name="$1"
+    local found
+    found=$(config_read --arg n "$name" '.terminals[] | select(.name == $n) | .name' 2>/dev/null || true)
+
+    if [[ -z "$found" ]]; then
+        die "No terminal session \"$name\" found."
+    fi
+
+    local win
+    win=$(config_read --arg n "$name" '.terminals[] | select(.name == $n) | .tmux_window')
+    if session_exists; then
+        tmux kill-window -t "$SESSION_NAME:$win" 2>/dev/null || true
+    fi
+    config_write --arg n "$name" '.terminals = [.terminals[] | select(.name != $n)]'
+    _renumber_windows
+    echo "Killed terminal session \"$name\""
+}
+
+cmd_stop() {
+    check_deps
+
+    if session_exists; then
+        tmux kill-session -t "$SESSION_NAME"
+        echo "Workspace session stopped."
+    else
+        echo "No workspace session running."
+    fi
+}
+
+cmd_config() {
+    check_deps
+    ensure_config
+
+    if [[ $# -lt 2 ]]; then
+        die "Usage: ws config <key> <value>"
+    fi
+
+    local key="$1" value="$2"
+    config_write --arg k "$key" --arg v "$value" '.settings[$k] = $v'
+    echo "Set $key = $value"
+}
+
+cmd_keys() {
+    cat <<'EOF'
+Miran — keyboard switching setup
+
+Miran binds the following keys inside tmux (no prefix needed):
+
+  Alt+1 .. Alt+9    jump to terminal N
+  Alt+0             jump to dashboard
+
+These work directly on Linux and Windows because Alt is the Meta key by
+default. On macOS, Cmd is the natural modifier but the terminal emulator
+intercepts it before tmux sees it. The fix is to teach your terminal to
+send the same escape sequence as Alt+N when you press Cmd+N. Then Cmd+N
+fires the same tmux binding as Alt+N — and Cmd+N works exactly like you
+want it to.
+
+──────────────────────────────────────────────────────────────────
+macOS — Terminal.app  (RECOMMENDED PATH for Terminal.app users)
+──────────────────────────────────────────────────────────────────
+Terminal.app reserves Cmd+1..9 for switching its own tabs and its
+keyboard customizer does not expose digit keys cleanly. The simple
+path on Terminal.app is to use Option as the Meta key:
+
+  1. Terminal menu → Settings (Cmd+,)
+  2. Profiles tab → select your profile
+  3. Keyboard sub-tab
+  4. Check "Use Option as Meta key"
+
+That is the entire setup. After it:
+  Option+1..9    →  jump to terminal N
+  Option+0       →  jump to dashboard
+
+If you really want Cmd+1..9 you have to either disable Terminal.app's
+default tab shortcuts in System Settings → Keyboard → Shortcuts → App
+Shortcuts and then add per-app bindings, or switch to a more flexible
+terminal like iTerm2 or Ghostty (see sections below).
+
+──────────────────────────────────────────────────────────────────
+macOS — iTerm2
+──────────────────────────────────────────────────────────────────
+1. Settings → Profiles → Keys → Key Mappings → "+" to add a binding
+2. For each digit 0..9:
+     Keyboard Shortcut:  ⌘1   (Cmd+1, etc.)
+     Action:             Send Escape Sequence
+     Esc+:               1     (just the digit)
+3. Save. Now Cmd+1..9 jumps to terminal 1..9, Cmd+0 to the dashboard.
+
+──────────────────────────────────────────────────────────────────
+macOS — Ghostty
+──────────────────────────────────────────────────────────────────
+Add to ~/.config/ghostty/config:
+    keybind = cmd+0=text:\x1b0
+    keybind = cmd+1=text:\x1b1
+    keybind = cmd+2=text:\x1b2
+    keybind = cmd+3=text:\x1b3
+    keybind = cmd+4=text:\x1b4
+    keybind = cmd+5=text:\x1b5
+    keybind = cmd+6=text:\x1b6
+    keybind = cmd+7=text:\x1b7
+    keybind = cmd+8=text:\x1b8
+    keybind = cmd+9=text:\x1b9
+Restart Ghostty.
+
+──────────────────────────────────────────────────────────────────
+Windows — Windows Terminal / WSL
+──────────────────────────────────────────────────────────────────
+Alt+1..9 already sends Meta by default, so no setup is required.
+Just press Alt+1..9 in any pane to switch.
+
+──────────────────────────────────────────────────────────────────
+Linux — most terminals
+──────────────────────────────────────────────────────────────────
+Alt+1..9 already sends Meta by default. No setup required.
+
+──────────────────────────────────────────────────────────────────
+Verify it works
+──────────────────────────────────────────────────────────────────
+After setup, run `ws start`, add a couple of terminals, and from
+inside any terminal press Cmd+1 (macOS) or Alt+1 (Win/Linux). You
+should land on terminal 1 instantly.
+EOF
+}
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+usage() {
+    cat <<'EOF'
+Miran — terminal workspace manager
+
+Usage: ws <command> [options]
+
+Commands:
+  start                          Start workspace (or reattach)
+  add <name> [--dir <path>] [--note "desc"]  Add terminal session
+  note <target> "new note"       Update note for terminal
+  rm <target>                    Remove terminal
+  ls                             List all terminals
+  dash                           Open dashboard (or start workspace)
+  kill <name>                    Kill a terminal session
+  stop                           Stop entire workspace
+  config <key> <value>           Set a configuration value
+  keys                           Show keyboard setup for one-key switching
+
+Targets can be: window number (1-9) or terminal name.
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 0
+fi
+
+command="$1"; shift
+
+case "$command" in
+    start)      cmd_start "$@" ;;
+    add)        cmd_add "$@" ;;
+    note)       cmd_note "$@" ;;
+    rm)         cmd_rm "$@" ;;
+    ls)         cmd_ls "$@" ;;
+    dash)       cmd_dash "$@" ;;
+    kill)       cmd_kill "$@" ;;
+    stop)       cmd_stop "$@" ;;
+    config)     cmd_config "$@" ;;
+    keys)       cmd_keys "$@" ;;
+    help|-h|--help) usage ;;
+    *)          die "Unknown command: $command. Run 'ws help' for usage." ;;
+esac
