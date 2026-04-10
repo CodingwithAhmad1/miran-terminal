@@ -74,6 +74,10 @@ setup_tmux_options() {
     tmux set-option -t "$SESSION_NAME" base-index 0
     tmux set-option -t "$SESSION_NAME" renumber-windows off
     tmux set-option -t "$SESSION_NAME" mouse on
+    # Enable 256-color and truecolor so child processes (e.g. Claude Code)
+    # get full ANSI color support instead of the default 8/16-color "screen".
+    tmux set-option -t "$SESSION_NAME" default-terminal "tmux-256color"
+    tmux set-option -sa terminal-overrides ",*:Tc"
     # Capital D goes to dashboard; lowercase d remains the default detach.
     tmux bind-key -T prefix D select-window -t "$SESSION_NAME:0"
     # Keep dashboard window alive even if dashboard.sh ever exits unexpectedly.

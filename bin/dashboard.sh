@@ -47,6 +47,7 @@ C_GRAY=$(_tput setaf 242)
 C_LIGHT_GRAY=$(_tput setaf 250)
 C_KEY_HINT=$(_tput setaf 246)
 C_DIM=$(_tput setaf 240)
+C_RED=$(_tput setaf 196)
 
 EL=$(_tput el)   # clear to end of line
 ED=$(_tput ed)   # clear from cursor to end of screen
@@ -139,6 +140,40 @@ format_idle() {
     fi
 }
 
+# ── Claude Code "needs input" detection ─────────────────────────────
+#
+# Captures the last 5 visible lines of a tmux pane and checks for known
+# Claude Code approval-prompt patterns.  Returns 0 if waiting, 1 otherwise.
+
+check_needs_input() {
+    local win="$1"
+    local pane_text
+    pane_text=$(tmux capture-pane -t "$SESSION_NAME:$win" -p -S -5 2>/dev/null) || return 1
+    [[ -z "$pane_text" ]] && return 1
+
+    # Strip ANSI escape sequences for reliable matching.
+    local clean
+    clean=$(printf '%s' "$pane_text" | sed $'s/\033\[[0-9;]*m//g')
+
+    # Tool-permission prompts:  "Allow Read …", "Allow Bash …", etc.
+    if printf '%s' "$clean" | grep -qiE \
+        'Allow .*(Read|Write|Edit|Bash|Glob|Grep|WebFetch|WebSearch|Agent|Skill|mcp_|NotebookEdit)'; then
+        return 0
+    fi
+    # Confirmation prompts
+    if printf '%s' "$clean" | grep -qiE \
+        'Do you want to (proceed|continue)|approve this|allow once|allow always'; then
+        return 0
+    fi
+    # Choice indicators
+    if printf '%s' "$clean" | grep -qE \
+        '\(y\)es.*\(n\)o|\(Y/n\)|\(y/N\)|\[Y/n\]|\[y/N\]'; then
+        return 0
+    fi
+
+    return 1
+}
+
 # ── Data fetch (single jq call, single tmux call) ────────────────────
 
 read_terminals() {
@@ -225,8 +260,17 @@ render() {
                 (( idle_seconds < 0 )) && idle_seconds=0
             fi
 
-            local status_text status_color
-            if (( idle_seconds > 300 )); then
+            local status_text status_color needs_input=0
+
+            # Check for Claude approval prompts (skip truly idle terminals).
+            if (( idle_seconds <= 600 || idle_seconds == 0 )); then
+                check_needs_input "$tmux_window" && needs_input=1
+            fi
+
+            if (( needs_input )); then
+                status_text="⚠ needs input"
+                status_color="$C_RED"
+            elif (( idle_seconds > 300 )); then
                 status_text="⏸ idle"
                 status_color="$C_ORANGE"
             else
@@ -402,6 +446,15 @@ show_help() {
         printf '%s' "$EL"
         row=$(( row + 1 ))
     done
+
+    row=$(( row + 2 ))
+    draw_line $row 4 "${C_GRAY}Status indicators:${C_RESET}"
+    row=$(( row + 1 ))
+    draw_line $row 6 "${C_RED}⚠ needs input${C_RESET}  ${C_LIGHT_GRAY}Claude is waiting for approval${C_RESET}"
+    row=$(( row + 1 ))
+    draw_line $row 6 "${C_GREEN}● running${C_RESET}      ${C_LIGHT_GRAY}Terminal active in last 5 min${C_RESET}"
+    row=$(( row + 1 ))
+    draw_line $row 6 "${C_ORANGE}⏸ idle${C_RESET}         ${C_LIGHT_GRAY}No activity for 5+ min${C_RESET}"
 
     row=$(( row + 2 ))
     draw_line $row 4 \
