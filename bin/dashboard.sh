@@ -64,10 +64,17 @@ NEEDS_FULL_REDRAW=1   # set on startup and SIGWINCH
 # ── Terminal control ─────────────────────────────────────────────────
 
 get_dims() {
-    local c l
-    c=$(_tput cols); l=$(_tput lines)
-    [[ -n "$c" && "$c" -gt 0 ]] && COLS=$c
-    [[ -n "$l" && "$l" -gt 0 ]] && LINES_COUNT=$l
+    local l c
+    # stty size queries the kernel directly — reliable inside tmux where
+    # tput may fall back to the default 24×80.
+    if read -r l c < <(stty size </dev/tty 2>/dev/null); then
+        [[ -n "$c" && "$c" -gt 0 ]] && COLS=$c
+        [[ -n "$l" && "$l" -gt 0 ]] && LINES_COUNT=$l
+    else
+        c=$(_tput cols); l=$(_tput lines)
+        [[ -n "$c" && "$c" -gt 0 ]] && COLS=$c
+        [[ -n "$l" && "$l" -gt 0 ]] && LINES_COUNT=$l
+    fi
 }
 
 # Position cursor at (row, col). Uses CSI directly to avoid an exec per call.
@@ -84,8 +91,7 @@ draw_hline() {
     local row="$1"
     move_to "$row" 0
     printf '%s' "$C_GRAY"
-    local i
-    for ((i = 0; i < COLS; i++)); do printf '─'; done
+    printf '─%.0s' $(seq 1 "$COLS")
     printf '%s%s' "$C_RESET" "$EL"
 }
 
@@ -182,7 +188,7 @@ render() {
     summary+="   $(date '+%a %b %d  %H:%M')"
 
     draw_hline 0
-    local title="${C_CYAN}${C_BOLD}workspace${C_RESET}"
+    local title="${C_CYAN}${C_BOLD}Ahmad's Workspace${C_RESET}"
     draw_line 1 2 "$title"
     local sum_col=$(( COLS - $(visible_len "$summary") - 2 ))
     (( sum_col < 20 )) && sum_col=20
@@ -253,16 +259,27 @@ render() {
         done <<< "$term_lines"
     fi
 
-    # Wipe any leftover content from the previous frame.
-    move_to $row 0
-    printf '%s' "$ED"
+    # ── Bottom bar (always pinned to the last two rows) ───
+    local bar_line=$(( LINES_COUNT - 3 ))
+    local bar_text_line=$(( LINES_COUNT - 2 ))
 
-    # ── Bottom bar ───
-    local bottom=$(( LINES_COUNT - 2 ))
-    (( bottom < row )) && bottom=$row
-    draw_hline "$bottom"
-    move_to $(( bottom + 1 )) 2
-    printf '%s1-9%s terminal  %sn%s new  %se%s edit  %sx%s remove  %sr%s refresh  %s?%s help  %sq%s detach%s' \
+    # Wipe leftover content between the terminal list and the bottom bar.
+    local r
+    for (( r = row; r < bar_line; r++ )); do
+        move_to $r 0
+        printf '%s' "$EL"
+    done
+
+    draw_hline "$bar_line"
+
+    # Build toolbar items, then center them across the full width.
+    local bar_plain="1-9 terminal   n new   e edit   x remove   r refresh   ? help   q detach"
+    local bar_len=${#bar_plain}
+    local pad=$(( (COLS - bar_len) / 2 ))
+    (( pad < 2 )) && pad=2
+
+    move_to "$bar_text_line" "$pad"
+    printf '%s1-9%s terminal   %sn%s new   %se%s edit   %sx%s remove   %sr%s refresh   %s?%s help   %sq%s detach%s' \
         "$C_KEY_HINT" "$C_GRAY" \
         "$C_KEY_HINT" "$C_GRAY" \
         "$C_KEY_HINT" "$C_GRAY" \
