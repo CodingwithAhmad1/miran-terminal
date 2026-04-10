@@ -60,6 +60,8 @@ CNORM=$(_tput cnorm) # show cursor
 COLS=80
 LINES_COUNT=24
 NEEDS_FULL_REDRAW=1   # set on startup and SIGWINCH
+PROMPTING=0           # suppress re-renders while reading input
+_INPUT=""             # return value from read_input (avoids subshell)
 
 # ── Terminal control ─────────────────────────────────────────────────
 
@@ -247,8 +249,16 @@ render() {
             printf '%s%s%s' "$C_GRAY" "$duration" "$C_RESET"
             row=$(( row + 1 ))
 
+            # Truncate note to fit within the terminal width.
+            # Prefix "▎ " is drawn at col 2, so usable chars ≈ COLS - 5.
+            local max_note=$(( COLS - 5 ))
+            (( max_note < 10 )) && max_note=10
+            local display_note="$note"
+            if (( ${#note} > max_note )); then
+                display_note="${note:0:$((max_note - 1))}…"
+            fi
             draw_line $row 2 \
-                "${status_color}▎${C_RESET} ${C_LIGHT_GRAY}${note}${C_RESET}"
+                "${status_color}▎${C_RESET} ${C_LIGHT_GRAY}${display_note}${C_RESET}"
             row=$(( row + 1 ))
 
             draw_line $row 2 \
@@ -310,26 +320,24 @@ clear_prompt() {
 
 read_input() {
     local prompt_text="$1"
-    {
-        prompt_at_bottom "$prompt_text"
-        printf '%s' "$CNORM"
-    } >/dev/tty
-    local input=""
-    IFS= read -r input </dev/tty || true
-    {
-        printf '%s' "$CIVIS"
-    } >/dev/tty
-    printf '%s' "$input"
+    PROMPTING=1
+    prompt_at_bottom "$prompt_text" >/dev/tty
+    printf '%s' "$CNORM" >/dev/tty
+    _INPUT=""
+    IFS= read -r _INPUT </dev/tty || true
+    printf '%s' "$CIVIS" >/dev/tty
+    PROMPTING=0
 }
 
 # ── Action handlers (route through `ws` so logic stays in one place) ─
 
 handle_new_session() {
-    local name note
-    name=$(read_input "Session name: ")
+    read_input "Session name: "
+    local name="$_INPUT"
     [[ -z "$name" ]] && { clear_prompt >/dev/tty; return; }
 
-    note=$(read_input "Note: ")
+    read_input "Note: "
+    local note="$_INPUT"
     [[ -z "$note" ]] && note="$name"
 
     "$WS_CMD" add "$name" --dir "$HOME" --note "$note" >/dev/null 2>>"$LOG_FILE" || true
@@ -338,11 +346,12 @@ handle_new_session() {
 }
 
 handle_edit() {
-    local target new_note
-    target=$(read_input "Edit which terminal (number or name): ")
+    read_input "Edit which terminal (number or name): "
+    local target="$_INPUT"
     [[ -z "$target" ]] && { clear_prompt >/dev/tty; return; }
 
-    new_note=$(read_input "New note: ")
+    read_input "New note: "
+    local new_note="$_INPUT"
     [[ -z "$new_note" ]] && { clear_prompt >/dev/tty; return; }
 
     "$WS_CMD" note "$target" "$new_note" >/dev/null 2>>"$LOG_FILE" || true
@@ -351,13 +360,12 @@ handle_edit() {
 }
 
 handle_remove() {
-    local target
-    target=$(read_input "Remove which terminal (number or name): ")
+    read_input "Remove which terminal (number or name): "
+    local target="$_INPUT"
     [[ -z "$target" ]] && { clear_prompt >/dev/tty; return; }
 
-    local confirm
-    confirm=$(read_input "Remove \"$target\"? [y/N]: ")
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    read_input "Remove \"$target\"? [y/N]: "
+    if [[ "$_INPUT" =~ ^[Yy]$ ]]; then
         "$WS_CMD" rm --force "$target" >/dev/null 2>>"$LOG_FILE" || true
     fi
     clear_prompt >/dev/tty
@@ -458,7 +466,7 @@ cleanup() {
 handle_winch() {
     NEEDS_FULL_REDRAW=1
     get_dims
-    render
+    (( PROMPTING )) || render
 }
 
 trap cleanup EXIT INT TERM

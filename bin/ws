@@ -183,7 +183,7 @@ cmd_add() {
 
     # Create tmux window if session is running
     if session_exists; then
-        tmux new-window -t "$SESSION_NAME:$window_idx" -n "$name" -c "$dir"
+        tmux new-window -d -t "$SESSION_NAME:$window_idx" -n "$name" -c "$dir"
         update_pane_border "$window_idx" "$name" "$note"
     fi
 
@@ -277,11 +277,16 @@ cmd_rm() {
 
     local win
     win=$(config_read --arg n "$name" '.terminals[] | select(.name == $n) | .tmux_window')
+    local active_win=""
     if session_exists; then
+        active_win=$(tmux display-message -t "$SESSION_NAME" -p '#{window_index}' 2>/dev/null || true)
         tmux kill-window -t "$SESSION_NAME:$win" 2>/dev/null || true
     fi
     config_write --arg n "$name" '.terminals = [.terminals[] | select(.name != $n)]'
     _renumber_windows
+    if [[ -n "$active_win" ]] && [[ "$active_win" != "$win" ]] && session_exists; then
+        tmux select-window -t "$SESSION_NAME:$active_win" 2>/dev/null || true
+    fi
     echo "Removed terminal \"$name\""
 }
 
